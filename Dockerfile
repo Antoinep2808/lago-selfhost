@@ -8,5 +8,5 @@ ENV LAGO_ENV=production
 ENV RAILS_ENV=production
 ENV RACK_ENV=production
 
-# Start Lago API
-CMD ["/bin/sh", "-c", "./scripts/start.api.sh"]
+# Start Lago API explicitly in production
+CMD ["bash", "-lc", "RAILS_ENV=production bundle exec puma -C config/puma.rb"]
