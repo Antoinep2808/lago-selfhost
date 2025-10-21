@@ -7,8 +7,8 @@ ENV RACK_ENV=production
 ENV LAGO_ENV=production
 ENV WEB_CONCURRENCY=1
 
-# Patch Puma config (désactive .present? check)
-RUN sed -i "s/if ENV$begin:math:display$'WEB_CONCURRENCY'$end:math:display$.present?/if ENV['WEB_CONCURRENCY']/" config/puma.rb
+# Patch du fichier puma.rb au bon chemin
+RUN sed -i "s/if ENV\\['WEB_CONCURRENCY'\\].present?/if ENV['WEB_CONCURRENCY']/" /app/api/config/puma.rb
 
-# Démarrage normal
+# Démarrage du serveur Rails
 CMD ["bash", "-lc", "bundle exec puma -C config/puma.rb"]
