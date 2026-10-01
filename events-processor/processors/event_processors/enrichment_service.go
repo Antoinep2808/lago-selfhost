@@ -22,12 +22,14 @@ func NewEventEnrichmentService(apiStore *models.ApiStore) *EventEnrichmentServic
 func (s *EventEnrichmentService) EnrichEvent(event *models.Event) utils.Result[[]*models.EnrichedEvent] {
 	enrichedEventResult := event.ToEnrichedEvent()
 	if enrichedEventResult.Failure() {
+		trackEnrichmentFailure(event, "build_enriched_event", enrichedEventResult)
 		return failedMultiEventsResult(enrichedEventResult, "build_enriched_event", "Error while converting event to enriched event")
 	}
 	enrichedEvent := enrichedEventResult.Value()
 
 	bmResult := s.apiStore.FetchBillableMetric(event.OrganizationID, event.Code)
 	if bmResult.Failure() {
+		trackEnrichmentFailure(event, "fetch_billable_metric", bmResult)
 		return failedMultiEventsResult(bmResult, "fetch_billable_metric", "Error fetching billable metric")
 	}
 
@@ -35,12 +37,14 @@ func (s *EventEnrichmentService) EnrichEvent(event *models.Event) utils.Result[[
 	if bm != nil {
 		enrichBmResult := s.enrichWithBillableMetric(enrichedEvent, bm)
 		if enrichBmResult.Failure() {
+			trackEnrichmentFailure(event, enrichBmResult.ErrorCode(), enrichBmResult)
 			return toMultiEventsResult(enrichBmResult)
 		}
 	}
 
 	subResult := s.apiStore.FetchSubscription(event.OrganizationID, event.ExternalSubscriptionID, enrichedEvent.Time)
 	if subResult.Failure() && subResult.IsCapturable() {
+		trackEnrichmentFailure(event, "fetch_subscription", subResult)
 		// We want to keep processing the event even if the subscription is not found
 		return failedMultiEventsResult(subResult, "fetch_subscription", "Error fetching subscription")
 	}
@@ -49,6 +53,7 @@ func (s *EventEnrichmentService) EnrichEvent(event *models.Event) utils.Result[[
 	if sub != nil {
 		enrichSubResult := s.enrichWithSubscription(enrichedEvent, sub)
 		if enrichSubResult.Failure() {
+			trackEnrichmentFailure(event, enrichSubResult.ErrorCode(), enrichSubResult)
 			return toMultiEventsResult(enrichSubResult)
 		}
 	}
@@ -167,4 +172,19 @@ func enrichWithPricingGroupKeys(event *models.EnrichedEvent) {
 	for _, key := range event.FlatFilter.PricingGroupKeys {
 		event.GroupedBy[key] = fmt.Sprintf("%v", event.Properties[key])
 	}
+}
+
+// trackEnrichmentFailure fires a Pendo track event when enrichment fails.
+func trackEnrichmentFailure(event *models.Event, failureStep string, r utils.AnyResult) {
+	utils.PendoTrack("event_enrichment_failed", "system", event.OrganizationID, map[string]any{
+		"organization_id":          event.OrganizationID,
+		"external_subscription_id": event.ExternalSubscriptionID,
+		"code":                     event.Code,
+		"error_code":               failureStep,
+		"error_message":            r.ErrorMessage(),
+		"failure_step":             failureStep,
+		"is_retryable":             r.IsRetryable(),
+		"is_capturable":            r.IsCapturable(),
+		"source":                   event.Source,
+	})
 }

@@ -69,6 +69,18 @@ func processEvents(records []*kgo.Record) []*kgo.Record {
 
 				// Push failed records to the dead letter queue
 				go processor.ProducerService.ProduceToDeadLetterQueue(ctx, event, result)
+
+				// Pendo Track: usage event sent to dead letter queue
+				utils.PendoTrack("usage_event_dead_lettered", "system", event.OrganizationID, map[string]any{
+					"organization_id":          event.OrganizationID,
+					"external_subscription_id": event.ExternalSubscriptionID,
+					"code":                     event.Code,
+					"error_code":               result.ErrorCode(),
+					"error_message":            result.ErrorMessage(),
+					"is_retryable":             result.IsRetryable(),
+					"source":                   event.Source,
+					"event_age_hours":          time.Since(event.IngestedAt.Time()).Hours(),
+				})
 			}
 
 			// Track processed records
@@ -99,6 +111,26 @@ func processEvent(event *models.Event) utils.Result[*models.EnrichedEvent] {
 	// 	go processor.ProducerService.ProduceEnrichedExpendedEvent(ctx, ev)
 	// }
 
+	// Pendo Track: usage event successfully enriched and produced
+	hasChargeFilters := false
+	for _, ev := range enrichedEvents {
+		if ev.FlatFilter != nil {
+			hasChargeFilters = true
+			break
+		}
+	}
+	utils.PendoTrack("usage_event_enriched", "system", enrichedEvent.OrganizationID, map[string]any{
+		"organization_id":          enrichedEvent.OrganizationID,
+		"external_subscription_id": enrichedEvent.ExternalSubscriptionID,
+		"subscription_id":          enrichedEvent.SubscriptionID,
+		"plan_id":                  enrichedEvent.PlanID,
+		"code":                     enrichedEvent.Code,
+		"aggregation_type":         enrichedEvent.AggregationType,
+		"source":                   enrichedEvent.Source,
+		"has_charge_filters":       hasChargeFilters,
+		"charge_count":             len(enrichedEvents),
+	})
+
 	if enrichedEvent.Subscription != nil && event.NotAPIPostProcessed() {
 		payInAdvance := false
 		for _, ev := range enrichedEvents {
@@ -110,12 +142,41 @@ func processEvent(event *models.Event) utils.Result[*models.EnrichedEvent] {
 
 		if payInAdvance {
 			go processor.ProducerService.ProduceChargedInAdvanceEvent(ctx, enrichedEvent)
+
+			// Pendo Track: pay-in-advance billing triggered
+			chargeID := ""
+			if enrichedEvent.ChargeID != nil {
+				chargeID = *enrichedEvent.ChargeID
+			}
+			chargeFilterID := ""
+			if enrichedEvent.ChargeFilterID != nil {
+				chargeFilterID = *enrichedEvent.ChargeFilterID
+			}
+			utils.PendoTrack("pay_in_advance_event_triggered", "system", enrichedEvent.OrganizationID, map[string]any{
+				"organization_id":          enrichedEvent.OrganizationID,
+				"external_subscription_id": enrichedEvent.ExternalSubscriptionID,
+				"subscription_id":          enrichedEvent.SubscriptionID,
+				"plan_id":                  enrichedEvent.PlanID,
+				"code":                     enrichedEvent.Code,
+				"aggregation_type":         enrichedEvent.AggregationType,
+				"charge_id":                chargeID,
+				"charge_filter_id":         chargeFilterID,
+			})
 		}
 
 		flagResult := processor.RefreshService.FlagSubscriptionRefresh(enrichedEvent)
 		if flagResult.Failure() {
 			return failedResult(flagResult, "flag_subscription_refresh", "Error flagging subscription refresh")
 		}
+
+		// Pendo Track: subscription refresh flagged in Redis
+		utils.PendoTrack("subscription_refresh_flagged", "system", enrichedEvent.OrganizationID, map[string]any{
+			"organization_id":          enrichedEvent.OrganizationID,
+			"subscription_id":          enrichedEvent.SubscriptionID,
+			"external_subscription_id": enrichedEvent.ExternalSubscriptionID,
+			"plan_id":                  enrichedEvent.PlanID,
+			"code":                     enrichedEvent.Code,
+		})
 
 		// Expire cache at charge and charge filter level
 		processor.CacheService.ExpireCache(enrichedEvents)
